@@ -67,6 +67,9 @@ def get_indicator_snapshot(symbol):
     strategy_fn = STRATEGIES[strategy_name]
 
     df = fetch_recent(symbol, lookback_days=90)
+    if df.empty or len(df) == 0:
+        raise ValueError(f"No price data returned for symbol '{symbol}' - check the symbol format is valid")
+
     if strategy_name == "sma_crossover":
         df = strategy_fn(df, config.FAST_MA, config.SLOW_MA)
         latest = df.iloc[-1]
@@ -248,7 +251,7 @@ def dashboard():
             if lookup_symbol.endswith("USD") and "-" not in lookup_symbol and "/" not in lookup_symbol:
                 base = lookup_symbol[:-3]
                 candidate = f"{base}-USD"
-                if candidate in config.SYMBOLS:
+                if candidate in config.ALL_KNOWN_SYMBOLS:
                     lookup_symbol = candidate
 
             entry = {

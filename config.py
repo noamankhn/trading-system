@@ -49,6 +49,11 @@ ASSET_CLASS = {  # used by execution/paper_trader.py to route order format corre
     **{s: "crypto" for s in CRYPTO_SYMBOLS_YFINANCE},
 }
 
+# All symbols we have any knowledge of (active + watchlist) - used for lookups like the
+# dashboard's crypto symbol normalization, which needs to recognize a symbol even if it's
+# currently paused, not just the actively-traded set.
+ALL_KNOWN_SYMBOLS = ACTIVE_SYMBOLS + WATCHLIST_SYMBOLS
+
 # ── Curated tiers (kept for reference/backtesting scripts like compare_strategies.py) ──
 PROVEN_WITH_SMA = ["GLD", "SPY"]
 NEEDS_DIFFERENT_STRATEGY = ["MSFT", "BTC-USD"]
