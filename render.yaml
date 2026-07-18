@@ -3,15 +3,18 @@
 # This defines ONE free-tier Cron Job that runs the paper-trading cycle on a schedule.
 
 services:
-  - type: cron
-    name: paper-trading-cycle
+  - type: web
+    name: trading-dashboard
     env: python
     plan: free
-    schedule: "30 21 * * 1-5"   # 21:30 UTC = 4:30pm ET, Mon-Fri, shortly after US market close
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python execution/paper_trader.py"
+    startCommand: "python dashboard/app.py"
     envVars:
       - key: ALPACA_API_KEY
-        sync: false      # set manually in Render dashboard - never commit real keys to git
+        sync: false
       - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: DASHBOARD_USERNAME
+        sync: false
+      - key: DASHBOARD_PASSWORD
         sync: false
