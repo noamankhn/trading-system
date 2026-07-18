@@ -48,14 +48,23 @@ def run_paper_trading_cycle():
     One evaluation cycle: pull recent data, compute signal, place/close paper orders.
     Intended to be run on a schedule (e.g. once per day after market close, or via cron).
     """
-    from alpaca.trading.requests import MarketOrderRequest
-    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
     from alpaca.common.exceptions import APIError
 
     client = get_alpaca_client()
     account = client.get_account()
     print(f"Alpaca paper account equity: ${float(account.equity):,.2f} (sandbox balance - not used for sizing)")
     print(f"Risk sizing based on configured capital: ${config.STARTING_CAPITAL:,.2f}\n")
+
+    # Pull all currently open (unfilled/pending) orders once, up front - used below to avoid
+    # submitting duplicate orders for a symbol that already has one queued (e.g. over a weekend
+    # when equity markets are closed and DAY orders sit unfilled for multiple runs in a row).
+    open_orders_request = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+    open_orders = client.get_orders(open_orders_request)
+    symbols_with_open_orders = {o.symbol for o in open_orders}
+    if symbols_with_open_orders:
+        print(f"Symbols with already-pending orders (will skip re-buying): {symbols_with_open_orders}\n")
 
     risk = RiskManager(
         starting_capital=config.STARTING_CAPITAL,  # deliberately NOT account.equity -
@@ -94,10 +103,13 @@ def run_paper_trading_cycle():
         except APIError:
             currently_long = False  # no open position for this symbol
 
-        print(f"{symbol} [{asset_class}, {strategy_name}]: price=${price:.2f} "
-              f"want_long={want_long} currently_long={currently_long}")
+        has_pending_order = order_symbol in symbols_with_open_orders
 
-        if want_long and not currently_long:
+        print(f"{symbol} [{asset_class}, {strategy_name}]: price=${price:.2f} "
+              f"want_long={want_long} currently_long={currently_long} "
+              f"pending_order={has_pending_order}")
+
+        if want_long and not currently_long and not has_pending_order:
             if asset_class == "crypto":
                 # crypto supports fractional sizing - use dollar-based risk sizing directly
                 risk_dollars = risk.state.capital * risk.max_risk_per_trade_pct
@@ -116,6 +128,9 @@ def run_paper_trading_cycle():
                 )
                 client.submit_order(order)
                 print(f"  -> BUY {qty} of {order_symbol} (paper)")
+
+        elif want_long and has_pending_order:
+            print(f"  -> SKIP: {order_symbol} already has an unfilled order queued, not stacking another")
 
         elif not want_long and currently_long:
             client.close_position(order_symbol)
