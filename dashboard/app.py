@@ -56,6 +56,55 @@ def requires_auth(f):
     return decorated
 
 
+def compute_cumulative_performance(client, open_positions):
+    """
+    Computes cumulative realized + unrealized P&L since this system started trading,
+    using Alpaca's actual filled order history (average-cost method per symbol) - not
+    a separately stored ledger, so it's always consistent with what Alpaca itself recorded.
+    """
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+
+    request = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=500)
+    closed_orders = client.get_orders(request)
+
+    filled = [o for o in closed_orders if o.filled_qty and float(o.filled_qty) > 0
+              and o.filled_avg_price is not None]
+    filled.sort(key=lambda o: o.filled_at or o.submitted_at)
+
+    cost_basis = {}  # symbol -> (qty, avg_cost)
+    realized_pnl = 0.0
+
+    for o in filled:
+        symbol = o.symbol
+        qty = float(o.filled_qty)
+        price = float(o.filled_avg_price)
+        side = o.side.value if hasattr(o.side, "value") else str(o.side)
+        cur_qty, cur_avg = cost_basis.get(symbol, (0.0, 0.0))
+
+        if side == "buy":
+            new_qty = cur_qty + qty
+            new_avg = (cur_qty * cur_avg + qty * price) / new_qty if new_qty > 0 else 0.0
+            cost_basis[symbol] = (new_qty, new_avg)
+        else:  # sell
+            sell_qty = min(qty, cur_qty) if cur_qty > 0 else 0.0
+            realized_pnl += sell_qty * (price - cur_avg)
+            remaining = cur_qty - sell_qty
+            cost_basis[symbol] = (remaining, cur_avg if remaining > 0 else 0.0)
+
+    unrealized_pnl = sum(p["unrealized_pl"] for p in open_positions)
+    total_pnl = realized_pnl + unrealized_pnl
+    total_return_pct = (total_pnl / config.STARTING_CAPITAL) * 100 if config.STARTING_CAPITAL else 0
+
+    return {
+        "realized_pnl": realized_pnl,
+        "unrealized_pnl": unrealized_pnl,
+        "total_pnl": total_pnl,
+        "total_return_pct": total_return_pct,
+        "closed_trades_counted": len(filled),
+    }
+
+
 def get_indicator_snapshot(symbol):
     """
     Fetches recent data and computes the current strategy/indicator state for one symbol -
@@ -135,6 +184,18 @@ PAGE_TEMPLATE = """
         .signal-flat { background: #334155; color: #94a3b8; }
         .source-item { font-size: 13px; color: #cbd5e1; padding: 6px 0; border-bottom: 1px solid #334155; }
         .source-item:last-child { border-bottom: none; }
+        .perf-banner { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+        .perf-item { text-align: center; }
+        .perf-item .plabel { color: #94a3b8; font-size: 12px; text-transform: uppercase; }
+        .perf-item .pvalue { font-size: 22px; font-weight: 700; margin-top: 4px; }
+        .position-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; margin-top: 6px; }
+        .pos-field { display: flex; justify-content: space-between; font-size: 13px;
+                     padding: 5px 0; border-bottom: 1px solid #1e293b; }
+        .pos-field .pflabel { color: #94a3b8; }
+        .pos-field .pfvalue { color: #f8fafc; font-weight: 500; }
+        .tp-value { color: #4ade80; }
+        .sl-value { color: #f87171; }
+        .liq-note { color: #64748b; font-style: italic; }
     </style>
 </head>
 <body>
@@ -142,6 +203,33 @@ PAGE_TEMPLATE = """
     {% if error %}
         <div class="error">Could not load Alpaca data: {{ error }}</div>
     {% else %}
+    <div class="card">
+        <div class="label">Cumulative Performance (since this system started trading)</div>
+        <div class="perf-banner" style="margin-top: 12px;">
+            <div class="perf-item">
+                <div class="plabel">Realized P&amp;L</div>
+                <div class="pvalue {{ 'positive' if perf.realized_pnl >= 0 else 'negative' }}">
+                    {{ "+" if perf.realized_pnl >= 0 else "" }}${{ "%.2f"|format(perf.realized_pnl) }}</div>
+            </div>
+            <div class="perf-item">
+                <div class="plabel">Unrealized P&amp;L</div>
+                <div class="pvalue {{ 'positive' if perf.unrealized_pnl >= 0 else 'negative' }}">
+                    {{ "+" if perf.unrealized_pnl >= 0 else "" }}${{ "%.2f"|format(perf.unrealized_pnl) }}</div>
+            </div>
+            <div class="perf-item">
+                <div class="plabel">Total P&amp;L</div>
+                <div class="pvalue {{ 'positive' if perf.total_pnl >= 0 else 'negative' }}">
+                    {{ "+" if perf.total_pnl >= 0 else "" }}${{ "%.2f"|format(perf.total_pnl) }}</div>
+            </div>
+            <div class="perf-item">
+                <div class="plabel">Total Return</div>
+                <div class="pvalue {{ 'positive' if perf.total_return_pct >= 0 else 'negative' }}">
+                    {{ "+" if perf.total_return_pct >= 0 else "" }}{{ "%.2f"|format(perf.total_return_pct) }}%</div>
+            </div>
+        </div>
+        <div class="risk-note">Based on {{ perf.closed_trades_counted }} closed order(s) + {{ positions|length }} open position(s), vs. your ${{ starting_capital }} tracked capital baseline</div>
+    </div>
+
     <div class="card">
         <div class="label">Alpaca Sandbox Equity (not your real tracked capital)</div>
         <div class="value">${{ "%.2f"|format(equity) }}</div>
@@ -186,11 +274,24 @@ PAGE_TEMPLATE = """
                     </span>
                 </summary>
                 <div class="detail-body">
+                    <div class="position-grid">
+                        <div class="pos-field"><span class="pflabel">Avg Entry</span>
+                            <span class="pfvalue">${{ "%.2f"|format(p.avg_entry_price) }}</span></div>
+                        <div class="pos-field"><span class="pflabel">Current Price</span>
+                            <span class="pfvalue">${{ "%.2f"|format(p.current_price) }}</span></div>
+                        <div class="pos-field"><span class="pflabel">Take-Profit</span>
+                            <span class="pfvalue tp-value">${{ "%.2f"|format(p.tp_price) }} (+{{ risk.take_profit_pct }}%)</span></div>
+                        <div class="pos-field"><span class="pflabel">Stop-Loss</span>
+                            <span class="pfvalue sl-value">${{ "%.2f"|format(p.sl_price) }} (-{{ risk.stop_loss_pct }}%)</span></div>
+                        <div class="pos-field"><span class="pflabel">Liquidation Price</span>
+                            <span class="pfvalue liq-note">N/A - no leverage (cash/spot)</span></div>
+                        <div class="pos-field"><span class="pflabel">Market Value</span>
+                            <span class="pfvalue">${{ "%.2f"|format(p.market_value) }}</span></div>
+                    </div>
                     {% if p.snapshot %}
-                    <div class="indicator-row"><span>Strategy</span><span>{{ p.snapshot.strategy }}</span></div>
+                    <div class="indicator-row" style="margin-top: 8px;"><span>Strategy</span><span>{{ p.snapshot.strategy }}</span></div>
                     <div class="indicator-row"><span>Current signal</span>
                         <span class="signal-badge {{ 'signal-long' if p.snapshot.signal == 'LONG' else 'signal-flat' }}">{{ p.snapshot.signal }}</span></div>
-                    <div class="indicator-row"><span>Last close</span><span>${{ p.snapshot.close }}</span></div>
                     <div class="indicator-row"><span>As of</span><span>{{ p.snapshot.as_of }}</span></div>
                     {% for k, v in p.snapshot.indicators.items() %}
                     <div class="indicator-row"><span>{{ k }}</span><span>{{ v }}</span></div>
@@ -210,12 +311,13 @@ PAGE_TEMPLATE = """
         <div class="label">Recent Orders (last 10)</div>
         {% if orders %}
         <table>
-            <tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Status</th><th>Submitted</th></tr>
+            <tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Submitted</th></tr>
             {% for o in orders %}
             <tr>
                 <td>{{ o.symbol }}</td>
                 <td>{{ o.side }}</td>
                 <td>{{ o.qty }}</td>
+                <td>{{ o.price_display }}</td>
                 <td>{{ o.status }}</td>
                 <td>{{ o.submitted_at }}</td>
             </tr>
@@ -259,6 +361,10 @@ def dashboard():
                 "qty": p.qty,
                 "market_value": float(p.market_value),
                 "unrealized_pl": float(p.unrealized_pl),
+                "avg_entry_price": float(p.avg_entry_price),
+                "current_price": float(p.current_price),
+                "tp_price": float(p.avg_entry_price) * (1 + config.TAKE_PROFIT_PCT),
+                "sl_price": float(p.avg_entry_price) * (1 - config.STOP_LOSS_PCT),
                 "snapshot": None,
                 "snapshot_error": None,
             }
@@ -273,6 +379,8 @@ def dashboard():
             "symbol": o.symbol,
             "side": o.side.value if hasattr(o.side, "value") else str(o.side),
             "qty": o.qty,
+            "price_display": (f"${float(o.filled_avg_price):.2f} (filled)" if o.filled_avg_price
+                               else "Market (pending fill)"),
             "status": o.status.value if hasattr(o.status, "value") else str(o.status),
             "submitted_at": o.submitted_at.strftime("%Y-%m-%d %H:%M") if o.submitted_at else "-",
         } for o in raw_orders[:10]]
@@ -286,6 +394,8 @@ def dashboard():
             "max_drawdown_pct": round(config.MAX_DRAWDOWN_PCT * 100, 2),
         }
 
+        perf = compute_cumulative_performance(client, positions)
+
         return render_template_string(
             PAGE_TEMPLATE,
             equity=float(account.equity),
@@ -293,12 +403,13 @@ def dashboard():
             positions=positions,
             orders=orders,
             risk=risk,
+            perf=perf,
             error=None,
         )
     except Exception as e:
         return render_template_string(PAGE_TEMPLATE, error=str(e), equity=0,
                                        starting_capital=config.STARTING_CAPITAL,
-                                       positions=[], orders=[], risk={})
+                                       positions=[], orders=[], risk={}, perf={})
 
 
 if __name__ == "__main__":

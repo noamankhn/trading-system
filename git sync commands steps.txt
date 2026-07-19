@@ -1,0 +1,59 @@
+venv\Scripts\activate
+
+Here's your go-to checklist for any future code change — save this, you'll use it every time.
+
+## Standard sync workflow (local → GitHub → Render redeploys automatically)
+
+**1. Check what's changed**
+```powershell
+cd D:\Workshop\trading_system_1\trading_system
+git status
+```
+Shows which files you've modified.
+
+**2. Review the actual changes** (optional but good habit)
+```powershell
+git diff
+```
+Shows line-by-line what changed in each file.
+
+**3. Stage the changes**
+```powershell
+git add .
+```
+This stages everything changed. To stage only specific files instead:
+```powershell
+git add config.py dashboard/app.py
+```
+
+**4. Commit with a clear message**
+```powershell
+git commit -m "Describe what you changed here"
+```
+Example: `git commit -m "Adjust stop-loss to 4%"`
+
+**5. Push to GitHub**
+```powershell
+git push
+```
+
+**6. That's it — Render auto-redeploys**
+Render watches your GitHub repo, so pushing automatically triggers a new deploy of the dashboard. Check **Render → trading-dashboard → Events tab** to confirm it says "Live" after a minute or two.
+
+## Before you start editing, one habit worth adding
+Always pull first, so you're editing the latest version:
+```powershell
+git pull
+```
+Run this before making changes, not just after — it prevents the exact conflict situation we just cleaned up.
+
+## Quick reference, the whole flow in order
+```powershell
+git pull
+# ... make your edits ...
+git add .
+git commit -m "your message"
+git push
+```
+
+That four-step rhythm (pull → edit → commit → push) is genuinely all you'll need going forward. Keep this message handy for next time.
