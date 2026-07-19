@@ -42,15 +42,28 @@ def fetch_historical(symbol: str, start: str, end: str) -> pd.DataFrame:
 
 def fetch_recent(symbol: str, lookback_days: int = 60) -> pd.DataFrame:
     """
-    Fetch recent data for live signal generation (paper trading loop).
+    Fetch recent data for live signal generation (paper trading loop + dashboard).
     """
     import yfinance as yf
+    import time
     from datetime import datetime, timedelta
 
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
-    df = yf.download(symbol, start=start.strftime("%Y-%m-%d"),
-                      end=end.strftime("%Y-%m-%d"), progress=False)
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
+
+    df = yf.download(symbol, start=start_str, end=end_str, progress=False, auto_adjust=True)
+
+    # Yahoo occasionally returns an empty/partial response transiently (rate limiting,
+    # brief API hiccup) - retry once after a short pause before treating it as a real failure.
+    if df.empty or len(df) < 5:
+        time.sleep(2)
+        df = yf.download(symbol, start=start_str, end=end_str, progress=False, auto_adjust=True)
+
+    if df.empty:
+        raise ValueError(f"No data returned for {symbol} after retry - "
+                          f"this may be a transient Yahoo Finance issue, try again shortly")
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
