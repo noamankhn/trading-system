@@ -343,7 +343,14 @@ def dashboard():
         client = TradingClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, paper=True)
         account = client.get_account()
         raw_positions = client.get_all_positions()
-        raw_orders = client.get_orders()
+        from alpaca.trading.requests import GetOrdersRequest as GetOrdersRequestForDisplay
+        from alpaca.trading.enums import QueryOrderStatus as QueryOrderStatusForDisplay
+        recent_orders_request = GetOrdersRequestForDisplay(
+            status=QueryOrderStatusForDisplay.ALL, limit=10,
+        )
+        raw_orders = client.get_orders(recent_orders_request)
+        # Alpaca doesn't guarantee sort order across statuses - sort explicitly, most recent first
+        raw_orders = sorted(raw_orders, key=lambda o: o.submitted_at or o.created_at, reverse=True)
 
         positions = []
         for p in raw_positions:
