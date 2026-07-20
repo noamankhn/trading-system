@@ -74,9 +74,10 @@ def compute_cumulative_performance(client, open_positions):
 
     cost_basis = {}  # symbol -> (qty, avg_cost)
     realized_pnl = 0.0
+    realized_pnl_by_symbol = {}
 
     for o in filled:
-        symbol = o.symbol
+        symbol = config.normalize_alpaca_symbol(o.symbol)
         qty = float(o.filled_qty)
         price = float(o.filled_avg_price)
         side = o.side.value if hasattr(o.side, "value") else str(o.side)
@@ -88,11 +89,26 @@ def compute_cumulative_performance(client, open_positions):
             cost_basis[symbol] = (new_qty, new_avg)
         else:  # sell
             sell_qty = min(qty, cur_qty) if cur_qty > 0 else 0.0
-            realized_pnl += sell_qty * (price - cur_avg)
+            trade_pnl = sell_qty * (price - cur_avg)
+            realized_pnl += trade_pnl
+            realized_pnl_by_symbol[symbol] = realized_pnl_by_symbol.get(symbol, 0.0) + trade_pnl
             remaining = cur_qty - sell_qty
             cost_basis[symbol] = (remaining, cur_avg if remaining > 0 else 0.0)
 
     unrealized_pnl = sum(p["unrealized_pl"] for p in open_positions)
+    unrealized_by_symbol = {config.normalize_alpaca_symbol(p["symbol"]): p["unrealized_pl"]
+                             for p in open_positions}
+
+    all_symbols_with_activity = set(realized_pnl_by_symbol) | set(unrealized_by_symbol)
+    by_symbol = {
+        sym: {
+            "realized": realized_pnl_by_symbol.get(sym, 0.0),
+            "unrealized": unrealized_by_symbol.get(sym, 0.0),
+            "total": realized_pnl_by_symbol.get(sym, 0.0) + unrealized_by_symbol.get(sym, 0.0),
+        }
+        for sym in all_symbols_with_activity
+    }
+
     total_pnl = realized_pnl + unrealized_pnl
     total_return_pct = (total_pnl / config.STARTING_CAPITAL) * 100 if config.STARTING_CAPITAL else 0
 
@@ -102,7 +118,81 @@ def compute_cumulative_performance(client, open_positions):
         "total_pnl": total_pnl,
         "total_return_pct": total_return_pct,
         "closed_trades_counted": len(filled),
+        "by_symbol": by_symbol,
     }
+
+
+_strategy_perf_cache = {}  # symbol -> {"data": {...}, "ts": epoch_seconds}
+_CACHE_TTL_SECONDS = 6 * 60 * 60  # 6 hours - backtest/walk-forward results only change at most
+                                   # once a day (when new market data arrives), no need to
+                                   # recompute on every 5-minute dashboard auto-refresh
+
+
+def get_backtest_and_walkforward(symbol):
+    """
+    Returns full-period backtest metrics AND walk-forward consistency stats for a symbol,
+    cached for a few hours since this involves real data fetches and isn't cheap to redo
+    every page load. This is what lets the dashboard show "backtest vs walk-forward vs live"
+    side by side for each actively-traded symbol.
+    """
+    import time as time_module
+
+    now = time_module.time()
+    cached = _strategy_perf_cache.get(symbol)
+    if cached and (now - cached["ts"]) < _CACHE_TTL_SECONDS:
+        return cached["data"]
+
+    from data.fetcher import fetch_historical
+    from backtest.engine import run_backtest
+    import walk_forward as wf
+
+    strategy_name = config.STRATEGY_MAP.get(symbol, config.STRATEGY)
+    strategy_fn = STRATEGIES[strategy_name]
+
+    df = fetch_historical(symbol, config.BACKTEST_START, config.BACKTEST_END)
+
+    # Full-period backtest (same as run_backtest_demo.py)
+    if strategy_name == "sma_crossover":
+        df_signaled = strategy_fn(df.copy(), config.FAST_MA, config.SLOW_MA)
+    else:
+        df_signaled = strategy_fn(df.copy(), config.RSI_PERIOD, config.RSI_OVERSOLD, config.RSI_OVERBOUGHT)
+    backtest_metrics = run_backtest(df_signaled, config, commission_pct=config.COMMISSION_PCT)["metrics"]
+
+    # Walk-forward: reuse the same fetched data, sliced into rolling windows (no second fetch)
+    windows = wf.make_windows(df)
+    wf_metrics_list = []
+    for test_start, test_end in windows:
+        window_df = df[(df.index >= test_start) & (df.index < test_end)].copy()
+        if len(window_df) < 30:
+            continue
+        if strategy_name == "sma_crossover":
+            window_df = strategy_fn(window_df, config.FAST_MA, config.SLOW_MA)
+        else:
+            window_df = strategy_fn(window_df, config.RSI_PERIOD, config.RSI_OVERSOLD, config.RSI_OVERBOUGHT)
+        wf_metrics_list.append(run_backtest(window_df, config, commission_pct=config.COMMISSION_PCT)["metrics"])
+
+    profitable = sum(1 for m in wf_metrics_list
+                      if isinstance(m.get("total_return_pct"), (int, float)) and m["total_return_pct"] > 0)
+    total_windows = len(wf_metrics_list)
+    sharpes = [m["sharpe_ratio"] for m in wf_metrics_list if isinstance(m.get("sharpe_ratio"), (int, float))]
+    avg_sharpe = round(sum(sharpes) / len(sharpes), 2) if sharpes else "n/a"
+
+    data = {
+        "strategy": strategy_name,
+        "backtest": {
+            "return_pct": backtest_metrics["total_return_pct"],
+            "sharpe": backtest_metrics["sharpe_ratio"],
+            "win_rate_pct": backtest_metrics["win_rate_pct"],
+            "profit_factor": backtest_metrics["profit_factor"],
+        },
+        "walk_forward": {
+            "profitable_windows": profitable,
+            "total_windows": total_windows,
+            "avg_sharpe": avg_sharpe,
+        },
+    }
+    _strategy_perf_cache[symbol] = {"data": data, "ts": now}
+    return data
 
 
 def get_indicator_snapshot(symbol):
@@ -176,6 +266,13 @@ PAGE_TEMPLATE = """
         summary .sym { font-weight: 600; color: #f8fafc; }
         .unmanaged-badge { background: #7c2d12; color: #fdba74; font-size: 11px;
                             padding: 2px 6px; border-radius: 4px; margin-left: 8px; font-weight: 600; }
+        .sp-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .sp-table th { text-align: left; padding: 8px; font-size: 11px; text-transform: uppercase;
+                        color: #94a3b8; border-bottom: 1px solid #334155; }
+        .sp-table td { padding: 10px 8px; font-size: 13px; border-bottom: 1px solid #1e293b; vertical-align: top; }
+        .sp-symbol { font-weight: 600; color: #f8fafc; }
+        .sp-strategy { color: #94a3b8; font-size: 12px; }
+        .sp-stage-label { color: #64748b; font-size: 10px; text-transform: uppercase; display: block; }
         summary::after { content: "▸"; color: #64748b; transition: transform 0.15s; }
         details[open] summary::after { transform: rotate(90deg); }
         .detail-body { padding: 0 14px 14px 14px; border-top: 1px solid #1e293b; }
@@ -236,6 +333,48 @@ PAGE_TEMPLATE = """
         <div class="label">Alpaca Sandbox Equity (not your real tracked capital)</div>
         <div class="value">${{ "%.2f"|format(equity) }}</div>
         <div class="risk-note">Your configured tracked capital: ${{ starting_capital }} (see config.py)</div>
+    </div>
+
+    <div class="card">
+        <div class="label">Strategy Performance: Backtest vs Walk-Forward vs Live Paper Trading</div>
+        <table class="sp-table">
+            <tr>
+                <th>Symbol / Strategy</th>
+                <th>Full-Period Backtest</th>
+                <th>Walk-Forward (out-of-sample)</th>
+                <th>Live Paper Trading</th>
+            </tr>
+            {% for sp in strategy_performance %}
+            <tr>
+                <td>
+                    <span class="sp-symbol">{{ sp.symbol }}</span><br>
+                    <span class="sp-strategy">{{ sp.strategy }}</span>
+                </td>
+                {% if sp.error %}
+                <td colspan="3" class="negative">Could not load: {{ sp.error }}</td>
+                {% else %}
+                <td>
+                    <span class="sp-stage-label">Return</span>{{ sp.backtest.return_pct }}%<br>
+                    <span class="sp-stage-label">Sharpe</span>{{ sp.backtest.sharpe }}<br>
+                    <span class="sp-stage-label">Win Rate</span>{{ sp.backtest.win_rate_pct }}%
+                </td>
+                <td>
+                    <span class="sp-stage-label">Profitable Windows</span>{{ sp.walk_forward.profitable_windows }}/{{ sp.walk_forward.total_windows }}<br>
+                    <span class="sp-stage-label">Avg Sharpe</span>{{ sp.walk_forward.avg_sharpe }}
+                </td>
+                <td>
+                    <span class="sp-stage-label">Realized</span>
+                    <span class="{{ 'positive' if sp.live.realized >= 0 else 'negative' }}">{{ "+" if sp.live.realized >= 0 else "" }}${{ "%.2f"|format(sp.live.realized) }}</span><br>
+                    <span class="sp-stage-label">Unrealized</span>
+                    <span class="{{ 'positive' if sp.live.unrealized >= 0 else 'negative' }}">{{ "+" if sp.live.unrealized >= 0 else "" }}${{ "%.2f"|format(sp.live.unrealized) }}</span><br>
+                    <span class="sp-stage-label">Total</span>
+                    <span class="{{ 'positive' if sp.live.total >= 0 else 'negative' }}">{{ "+" if sp.live.total >= 0 else "" }}${{ "%.2f"|format(sp.live.total) }}</span>
+                </td>
+                {% endif %}
+            </tr>
+            {% endfor %}
+        </table>
+        <div class="risk-note">Backtest/walk-forward figures cached up to 6 hours (recomputing every page load isn't necessary since they're based on historical data). Live figures are always fresh from Alpaca.</div>
     </div>
 
     <div class="card">
@@ -399,6 +538,21 @@ def dashboard():
 
         perf = compute_cumulative_performance(client, positions)
 
+        strategy_performance = []
+        for symbol in config.ACTIVE_SYMBOLS:
+            entry = {"symbol": symbol, "strategy": config.STRATEGY_MAP.get(symbol, config.STRATEGY),
+                      "error": None}
+            try:
+                bt_wf = get_backtest_and_walkforward(symbol)
+                entry["backtest"] = bt_wf["backtest"]
+                entry["walk_forward"] = bt_wf["walk_forward"]
+            except Exception as bt_err:
+                entry["error"] = str(bt_err)
+
+            live = perf.get("by_symbol", {}).get(symbol, {"realized": 0.0, "unrealized": 0.0, "total": 0.0})
+            entry["live"] = live
+            strategy_performance.append(entry)
+
         return render_template_string(
             PAGE_TEMPLATE,
             equity=float(account.equity),
@@ -407,12 +561,13 @@ def dashboard():
             orders=orders,
             risk=risk,
             perf=perf,
+            strategy_performance=strategy_performance,
             error=None,
         )
     except Exception as e:
         return render_template_string(PAGE_TEMPLATE, error=str(e), equity=0,
                                        starting_capital=config.STARTING_CAPITAL,
-                                       positions=[], orders=[], risk={}, perf={})
+                                       positions=[], orders=[], risk={}, perf={}, strategy_performance=[])
 
 
 if __name__ == "__main__":
