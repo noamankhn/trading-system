@@ -79,6 +79,24 @@ def run_paper_trading_cycle():
         max_drawdown_pct=config.MAX_DRAWDOWN_PCT,
     )
 
+    # ── Safeguard: close any open position that's outside the current active list ──
+    # This catches exactly the scenario that happened in practice: a symbol gets moved to
+    # the watchlist (e.g. after walk-forward review), but a pending order from before that
+    # change fills later and creates a position nothing is watching anymore. Rather than
+    # relying on remembering to close it manually, sweep for this every run.
+    all_positions = client.get_all_positions()
+    for pos in all_positions:
+        normalized = config.normalize_alpaca_symbol(pos.symbol)
+        if normalized not in config.SYMBOLS:
+            print(f"SAFEGUARD: {pos.symbol} (qty {pos.qty}) is open but not in the active "
+                  f"symbol list {config.SYMBOLS} - closing it, since nothing would otherwise manage it")
+            try:
+                client.close_position(pos.symbol)
+                print(f"  -> CLOSED {pos.symbol} (was unmanaged)")
+            except APIError as close_err:
+                print(f"  -> FAILED to close {pos.symbol}: {close_err}")
+    print()
+
     for symbol in config.SYMBOLS:
         asset_class = config.ASSET_CLASS.get(symbol, "equity")
         # Alpaca wants "BTC/USD" for crypto orders even though yfinance data uses "BTC-USD"

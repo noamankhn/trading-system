@@ -174,6 +174,8 @@ PAGE_TEMPLATE = """
                   justify-content: space-between; align-items: center; }
         summary::-webkit-details-marker { display: none; }
         summary .sym { font-weight: 600; color: #f8fafc; }
+        .unmanaged-badge { background: #7c2d12; color: #fdba74; font-size: 11px;
+                            padding: 2px 6px; border-radius: 4px; margin-left: 8px; font-weight: 600; }
         summary::after { content: "▸"; color: #64748b; transition: transform 0.15s; }
         details[open] summary::after { transform: rotate(90deg); }
         .detail-body { padding: 0 14px 14px 14px; border-top: 1px solid #1e293b; }
@@ -267,7 +269,7 @@ PAGE_TEMPLATE = """
             {% for p in positions %}
             <details>
                 <summary>
-                    <span class="sym">{{ p.symbol }}</span>
+                    <span class="sym">{{ p.symbol }}</span>{% if not p.is_active %}<span class="unmanaged-badge">WATCHLIST - WILL AUTO-CLOSE NEXT CYCLE</span>{% endif %}
                     <span>Qty {{ p.qty }} · ${{ "%.2f"|format(p.market_value) }} ·
                         <span class="{{ 'positive' if p.unrealized_pl >= 0 else 'negative' }}">
                         {{ "+" if p.unrealized_pl >= 0 else "" }}${{ "%.2f"|format(p.unrealized_pl) }}</span>
@@ -354,14 +356,7 @@ def dashboard():
 
         positions = []
         for p in raw_positions:
-            # Alpaca crypto positions use "BTCUSD" style symbols; our config/data layer
-            # uses "BTC-USD" - normalize so we can look up the right strategy/indicators.
-            lookup_symbol = p.symbol
-            if lookup_symbol.endswith("USD") and "-" not in lookup_symbol and "/" not in lookup_symbol:
-                base = lookup_symbol[:-3]
-                candidate = f"{base}-USD"
-                if candidate in config.ALL_KNOWN_SYMBOLS:
-                    lookup_symbol = candidate
+            lookup_symbol = config.normalize_alpaca_symbol(p.symbol)
 
             entry = {
                 "symbol": p.symbol,
@@ -372,6 +367,7 @@ def dashboard():
                 "current_price": float(p.current_price),
                 "tp_price": float(p.avg_entry_price) * (1 + config.TAKE_PROFIT_PCT),
                 "sl_price": float(p.avg_entry_price) * (1 - config.STOP_LOSS_PCT),
+                "is_active": lookup_symbol in config.SYMBOLS,
                 "snapshot": None,
                 "snapshot_error": None,
             }
