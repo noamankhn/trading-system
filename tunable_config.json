@@ -1,0 +1,25 @@
+{
+  "_comment": "This file holds the parameters the self-improvement system is allowed to change, after human approval. Never edit code files automatically - only this JSON. Edit by hand any time too; config.py just loads whatever is here.",
+  "active_symbols": ["SPY", "GLD", "BTC-USD"],
+  "watchlist_symbols": ["AAPL", "MSFT", "USO", "SLV", "ETH-USD"],
+  "strategy_map": {
+    "GLD": "sma_crossover",
+    "SPY": "sma_crossover",
+    "BTC-USD": "rsi_mean_reversion",
+    "SLV": "sma_crossover",
+    "MSFT": "rsi_mean_reversion",
+    "AAPL": "sma_crossover",
+    "USO": "sma_crossover",
+    "ETH-USD": "sma_crossover"
+  },
+  "risk_parameters": {
+    "max_risk_per_trade_pct": 0.02,
+    "max_position_pct": 0.20,
+    "stop_loss_pct": 0.03,
+    "take_profit_pct": 0.06,
+    "max_daily_loss_pct": 0.05,
+    "max_drawdown_pct": 0.15
+  },
+  "last_modified_by": "initial setup",
+  "last_modified_at": "2026-07-20"
+}

@@ -1,0 +1,33 @@
+name: Apply Approved Improvements
+
+# Triggers when improvement_proposals.json changes (i.e., you edited "approved": true on
+# something and pushed). Applies ONLY the approved-and-not-yet-applied proposals to
+# tunable_config.json - never arbitrary code, only the fixed safe change types.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "improvement_proposals.json"
+  workflow_dispatch: {}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Apply approved proposals
+        run: python improvement/apply_approved.py
+
+      - name: Commit changes if any were applied
+        run: |
+          git config user.name "self-improvement-bot"
+          git config user.email "actions@github.com"
+          git add tunable_config.json improvement_proposals.json
+          git diff --staged --quiet || git commit -m "Apply human-approved self-improvement proposal(s)"
+          git push

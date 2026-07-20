@@ -1,0 +1,44 @@
+name: Weekly Self-Improvement Analysis
+
+# Runs the improvement analyzer (compares live vs backtest vs walk-forward), optionally
+# gets AI council review if OPENROUTER_API_KEY is set, and commits any new proposals to
+# improvement_proposals.json. This does NOT apply anything automatically - it only proposes.
+# You review the file, set "approved": true on what you want, and push - a separate workflow
+# then applies only what you approved.
+
+on:
+  schedule:
+    - cron: "0 12 * * 1"   # Mondays at noon UTC
+  workflow_dispatch: {}
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run improvement analyzer
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python improvement/analyzer.py
+
+      - name: Run AI council review (optional - skips if no key set)
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python improvement/council.py
+
+      - name: Commit new proposals if any
+        run: |
+          git config user.name "self-improvement-bot"
+          git config user.email "actions@github.com"
+          git add improvement_proposals.json
+          git diff --staged --quiet || git commit -m "Weekly self-improvement analysis: new proposals for review"
+          git push

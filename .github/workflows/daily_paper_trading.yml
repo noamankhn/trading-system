@@ -1,9 +1,14 @@
 name: Daily Paper Trading Cycle
 
+# Runs the paper trading cycle automatically every weekday, for free, using GitHub Actions
+# instead of Render's Cron Job (which stopped being free in Render's April 2026 pricing change).
+# This checks all symbols' signals and places/closes paper orders on your Alpaca account.
+
 on:
   schedule:
+    # 21:30 UTC = 4:30pm ET, Monday-Friday, shortly after US market close
     - cron: "30 21 * * 1-5"
-  workflow_dispatch: {}
+  workflow_dispatch: {}   # lets you also trigger it manually from the GitHub Actions tab
 
 jobs:
   run-paper-trader:
