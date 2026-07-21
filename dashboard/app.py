@@ -158,6 +158,15 @@ PAGE_TEMPLATE = """
         .tp-value { color: #4ade80; }
         .sl-value { color: #f87171; }
         .liq-note { color: #64748b; font-style: italic; }
+        .tab-bar { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid #334155; }
+        .tab-btn { background: none; border: none; color: #94a3b8; padding: 10px 16px; cursor: pointer;
+                   font-size: 13px; font-weight: 600; border-bottom: 2px solid transparent; }
+        .tab-btn.active { color: #f8fafc; border-bottom-color: #2563eb; }
+        .exit-badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700;
+                      margin-left: 8px; text-transform: uppercase; }
+        .exit-take_profit { background: #14532d; color: #4ade80; }
+        .exit-stop_loss { background: #7f1d1d; color: #f87171; }
+        .exit-signal_flip { background: #1e3a5f; color: #7dd3fc; }
     </style>
 </head>
 <body>
@@ -266,7 +275,13 @@ PAGE_TEMPLATE = """
     </div>
 
     <div class="card">
-        <div class="label">Open Positions ({{ positions|length }}) - click a row for strategy/indicator detail</div>
+        <div class="tab-bar">
+            <button class="tab-btn active" onclick="showTab('open')">Open Positions ({{ positions|length }})</button>
+            <button class="tab-btn" onclick="showTab('pending')">Pending Orders ({{ pending_orders|length }})</button>
+            <button class="tab-btn" onclick="showTab('closed')">Closed Trades ({{ closed_trades|length }})</button>
+        </div>
+
+        <div id="tab-open" class="tab-panel">
         {% if positions %}
             {% for p in positions %}
             <details>
@@ -309,30 +324,86 @@ PAGE_TEMPLATE = """
         {% else %}
         <div class="empty">No open positions right now.</div>
         {% endif %}
-    </div>
+        </div>
 
-    <div class="card">
-        <div class="label">Recent Orders (last 10)</div>
-        {% if orders %}
+        <div id="tab-pending" class="tab-panel" style="display:none;">
+        {% if pending_orders %}
         <table>
-            <tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Submitted</th></tr>
-            {% for o in orders %}
+            <tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Order Type</th><th>Submitted</th></tr>
+            {% for o in pending_orders %}
             <tr>
                 <td>{{ o.symbol }}</td>
                 <td>{{ o.side }}</td>
                 <td>{{ o.qty }}</td>
-                <td>{{ o.price_display }}</td>
-                <td>{{ o.status }}</td>
+                <td>Market (waiting for execution)</td>
                 <td>{{ o.submitted_at }}</td>
             </tr>
             {% endfor %}
         </table>
         {% else %}
-        <div class="empty">No recent orders.</div>
+        <div class="empty">No pending orders right now.</div>
         {% endif %}
+        </div>
+
+        <div id="tab-closed" class="tab-panel" style="display:none;">
+        {% if closed_trades %}
+            <div class="risk-note" style="margin-bottom: 10px;">MFE = best unrealized profit reached during the trade. MAE = worst unrealized loss reached. Exit reason is inferred from the final P&amp;L vs. your configured TP/SL levels.</div>
+            {% for t in closed_trades %}
+            <details>
+                <summary>
+                    <span class="sym">{{ t.symbol }}</span>
+                    <span class="exit-badge exit-{{ t.exit_reason|lower }}">{{ t.exit_reason }}</span>
+                    <span>{{ t.entry_date_display }} &rarr; {{ t.exit_date_display }} ·
+                        <span class="{{ 'positive' if t.pnl_dollars >= 0 else 'negative' }}">
+                        {{ "+" if t.pnl_dollars >= 0 else "" }}${{ "%.2f"|format(t.pnl_dollars) }}
+                        ({{ "+" if t.pnl_pct >= 0 else "" }}{{ "%.2f"|format(t.pnl_pct) }}%)</span>
+                    </span>
+                </summary>
+                <div class="detail-body">
+                    <div class="position-grid">
+                        <div class="pos-field"><span class="pflabel">Entry Price</span>
+                            <span class="pfvalue">${{ "%.2f"|format(t.entry_price) }}</span></div>
+                        <div class="pos-field"><span class="pflabel">Exit Price</span>
+                            <span class="pfvalue">${{ "%.2f"|format(t.exit_price) }}</span></div>
+                        <div class="pos-field"><span class="pflabel">Qty</span>
+                            <span class="pfvalue">{{ t.qty }}</span></div>
+                        <div class="pos-field"><span class="pflabel">Final Result</span>
+                            <span class="pfvalue {{ 'positive' if t.pnl_dollars >= 0 else 'negative' }}">
+                                {{ "+" if t.pnl_dollars >= 0 else "" }}${{ "%.2f"|format(t.pnl_dollars) }}</span></div>
+                        {% if t.mfe_pct is not none %}
+                        <div class="pos-field"><span class="pflabel">Best point reached (MFE)</span>
+                            <span class="pfvalue tp-value">+{{ "%.2f"|format(t.mfe_pct) }}%</span></div>
+                        <div class="pos-field"><span class="pflabel">Worst point reached (MAE)</span>
+                            <span class="pfvalue sl-value">{{ "%.2f"|format(t.mae_pct) }}%</span></div>
+                        {% else %}
+                        <div class="pos-field" style="grid-column: span 2;">
+                            <span class="pflabel">Price path unavailable</span>
+                            <span class="pfvalue liq-note">{{ t.path_error }}</span></div>
+                        {% endif %}
+                    </div>
+                    {% if t.mfe_pct is not none and t.mfe_pct > 0 and t.pnl_dollars < 0 %}
+                    <div class="indicator-row" style="margin-top: 8px; color: #fdba74;">
+                        <span>⚠ This trade was profitable at one point (+{{ "%.2f"|format(t.mfe_pct) }}%) before reversing into a loss</span>
+                    </div>
+                    {% endif %}
+                </div>
+            </details>
+            {% endfor %}
+        {% else %}
+        <div class="empty">No closed trades yet.</div>
+        {% endif %}
+        </div>
     </div>
     {% endif %}
     <div class="risk-note">Auto-refreshes every 5 minutes. Simulated paper trading only - no real money.</div>
+    <script>
+        function showTab(name) {
+            document.querySelectorAll('.tab-panel').forEach(el => el.style.display = 'none');
+            document.getElementById('tab-' + name).style.display = 'block';
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            event.target.classList.add('active');
+        }
+    </script>
 </body>
 </html>
 """
@@ -380,15 +451,25 @@ def dashboard():
 
             positions.append(entry)
 
-        orders = [{
+        # Pending orders: not yet filled - these belong in the "Pending Orders" tab
+        pending_orders = [{
             "symbol": o.symbol,
             "side": o.side.value if hasattr(o.side, "value") else str(o.side),
             "qty": o.qty,
-            "price_display": (f"${float(o.filled_avg_price):.2f} (filled)" if o.filled_avg_price
-                               else "Market (pending fill)"),
-            "status": o.status.value if hasattr(o.status, "value") else str(o.status),
             "submitted_at": o.submitted_at.strftime("%Y-%m-%d %H:%M") if o.submitted_at else "-",
-        } for o in raw_orders[:10]]
+        } for o in raw_orders if not o.filled_avg_price]
+
+        # Closed trades with full price-path analysis (MFE/MAE, inferred exit reason) -
+        # this is what lets you see the full pattern of what happened during each trade,
+        # not just the final win/loss number.
+        from analysis.trade_history import get_closed_trades_with_analysis
+        raw_closed_trades = get_closed_trades_with_analysis(client, max_trades=25)
+        closed_trades = []
+        for t in raw_closed_trades:
+            t = dict(t)
+            t["entry_date_display"] = t["entry_date"].strftime("%Y-%m-%d") if t["entry_date"] else "-"
+            t["exit_date_display"] = t["exit_date"].strftime("%Y-%m-%d") if t["exit_date"] else "-"
+            closed_trades.append(t)
 
         risk = {
             "max_risk_per_trade_pct": round(config.MAX_RISK_PER_TRADE_PCT * 100, 2),
@@ -421,7 +502,8 @@ def dashboard():
             equity=float(account.equity),
             starting_capital=config.STARTING_CAPITAL,
             positions=positions,
-            orders=orders,
+            pending_orders=pending_orders,
+            closed_trades=closed_trades,
             risk=risk,
             perf=perf,
             strategy_performance=strategy_performance,
@@ -430,7 +512,8 @@ def dashboard():
     except Exception as e:
         return render_template_string(PAGE_TEMPLATE, error=str(e), equity=0,
                                        starting_capital=config.STARTING_CAPITAL,
-                                       positions=[], orders=[], risk={}, perf={}, strategy_performance=[])
+                                       positions=[], pending_orders=[], closed_trades=[],
+                                       risk={}, perf={}, strategy_performance=[])
 
 
 if __name__ == "__main__":

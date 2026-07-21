@@ -118,14 +118,34 @@ def run_paper_trading_cycle():
         try:
             current_position = client.get_open_position(order_symbol)
             currently_long = float(current_position.qty) > 0
+            entry_price = float(current_position.avg_entry_price)
         except APIError:
-            currently_long = False  # no open position for this symbol
+            currently_long = False
+            entry_price = None
 
         has_pending_order = order_symbol in symbols_with_open_orders
 
         print(f"{symbol} [{asset_class}, {strategy_name}]: price=${price:.2f} "
               f"want_long={want_long} currently_long={currently_long} "
               f"pending_order={has_pending_order}")
+
+        # ── Check stop-loss / take-profit BEFORE the signal-based exit check ──
+        # This was previously missing entirely from live trading - only the backtest engine
+        # enforced TP/SL. That meant a live position could move far more than the configured
+        # risk allowed before ever exiting, silently breaking the system's core risk promise.
+        exit_reason = None
+        if currently_long and entry_price:
+            change = (price - entry_price) / entry_price
+            if change <= -config.STOP_LOSS_PCT:
+                exit_reason = "STOP_LOSS"
+            elif change >= config.TAKE_PROFIT_PCT:
+                exit_reason = "TAKE_PROFIT"
+
+        if exit_reason:
+            client.close_position(order_symbol)
+            print(f"  -> CLOSE position in {order_symbol}: {exit_reason} hit "
+                  f"(entry ${entry_price:.2f} -> current ${price:.2f}, {change:+.2%}) (paper)")
+            currently_long = False
 
         if want_long and not currently_long and not has_pending_order:
             if asset_class == "crypto":
@@ -152,7 +172,7 @@ def run_paper_trading_cycle():
 
         elif not want_long and currently_long:
             client.close_position(order_symbol)
-            print(f"  -> CLOSE position in {order_symbol} (paper)")
+            print(f"  -> CLOSE position in {order_symbol}: SIGNAL_FLIP (paper)")
 
 
 if __name__ == "__main__":
