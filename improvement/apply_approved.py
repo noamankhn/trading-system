@@ -53,6 +53,12 @@ def apply_proposal(tunables, proposal):
         print(f"  SKIPPED: invalid parameter/value for adjust_risk_parameter proposal {proposal['id']}")
         return False
 
+    elif ptype == "calibration_drift":
+        print(f"  INFO: calibration_drift findings are informational only - nothing to apply. "
+              f"Review the drift manually; if it's serious enough, it'll likely also surface "
+              f"as a demote_to_watchlist proposal on a later run.")
+        return False
+
     else:
         print(f"  SKIPPED: unknown proposal type '{ptype}' - refusing to apply anything "
               f"outside the fixed set of safe change types")

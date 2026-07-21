@@ -25,6 +25,10 @@ PROPOSALS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 
 # The ONLY kinds of changes this system is allowed to propose. Anything not on this list
 # cannot be generated, regardless of what an LLM "suggests" during the council review step.
+# The ONLY kinds of ACTIONABLE changes this system is allowed to propose and apply.
+# "calibration_drift" (from improvement/calibration.py) is a fourth finding type that can
+# appear in proposals but is deliberately NOT here - it's informational only, surfaced for
+# you to read, and apply_approved.py will never act on it even if accidentally approved.
 PROPOSAL_TYPES = {"demote_to_watchlist", "promote_to_active", "adjust_risk_parameter"}
 
 
@@ -97,6 +101,20 @@ def generate_findings():
                 "proposed_change": f"Move {symbol} from watchlist_symbols to active_symbols",
                 "approved": False,
             })
+
+    # Calibration check: is live performance actually tracking what backtest/walk-forward
+    # predicted, right now, with real trades? Runs every cycle, between the structural
+    # demote/promote checks above and the proposals being written below.
+    from improvement.calibration import compute_calibration_findings
+    try:
+        calibration_findings = compute_calibration_findings(client)
+        findings.extend(calibration_findings)
+    except Exception as e:
+        findings.append({
+            "type": "data_error", "symbol": None,
+            "reason": f"Calibration check failed: {e}",
+            "approved": False,
+        })
 
     return findings
 
