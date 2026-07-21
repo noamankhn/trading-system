@@ -44,4 +44,5 @@ jobs:
           git config user.email "actions@github.com"
           git add improvement_proposals.json
           git diff --staged --quiet || git commit -m "Weekly self-improvement analysis: new proposals for review"
+          git pull --rebase origin main
           git push

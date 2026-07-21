@@ -33,4 +33,5 @@ jobs:
           git config user.email "actions@github.com"
           git add tunable_config.json improvement_proposals.json
           git diff --staged --quiet || git commit -m "Apply human-approved self-improvement proposal(s)"
+          git pull --rebase origin main
           git push
